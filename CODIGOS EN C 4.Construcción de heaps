@@ -1,0 +1,48 @@
+#include <stdio.h>
+
+static void intercambiar(int *a, int *b) { int t = *a; *a = *b; *b = t; }
+
+/* heapify: hunde a[i] hasta su posicion correcta (min-heap de tamano n) */
+static void heapify(int *a, size_t n, size_t i) {
+    for (;;) {
+        size_t menor = i, l = 2 * i + 1, r = 2 * i + 2;
+        if (l < n && a[l] < a[menor]) menor = l;
+        if (r < n && a[r] < a[menor]) menor = r;
+        if (menor == i) break;
+        intercambiar(&a[i], &a[menor]);
+        i = menor;
+    }
+}
+
+/* Algoritmo de Floyd: convierte un arreglo cualquiera en min-heap. Costo: O(n) */
+void construir_heap(int *a, size_t n) {
+    for (size_t i = n / 2; i-- > 0; )      /* desde el ultimo nodo interno hasta la raiz */
+        heapify(a, n, i);
+}
+
+/* Verifica la propiedad de heap: ningun hijo es menor que su padre */
+int es_min_heap(const int *a, size_t n) {
+    for (size_t i = 1; i < n; i++)
+        if (a[i] < a[(i - 1) / 2]) return 0;
+    return 1;
+}
+
+static void imprimir(const char *titulo, const int *a, size_t n) {
+    printf("%s ", titulo);
+    for (size_t i = 0; i < n; i++) printf("%d ", a[i]);
+    printf("\n");
+}
+
+int main(void) {
+    int a[] = {9, 4, 7, 1, 8, 2, 6};
+    size_t n = sizeof a / sizeof a[0];
+
+    imprimir("Antes de construir:  ", a, n);                       /* 9 4 7 1 8 2 6 */
+    printf("Es min-heap? %s\n", es_min_heap(a, n) ? "si" : "no");   /* no */
+
+    construir_heap(a, n);
+
+    imprimir("Despues de construir:", a, n);                       /* 1 4 2 9 8 7 6 */
+    printf("Es min-heap? %s\n", es_min_heap(a, n) ? "si" : "no");   /* si */
+    return 0;
+}
