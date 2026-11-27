@@ -1,0 +1,374 @@
+
+#include <stdio.h>
+#include <stdlib.h>
+
+// Estructura del nodo AVL
+typedef struct Nodo {
+    int codigo;
+    int altura;
+    struct Nodo *izquierda;
+    struct Nodo *derecha;
+} Nodo;
+
+// Obtener el mayor de dos numeros
+int maximo(int a, int b) {
+    return (a > b) ? a : b;
+}
+
+// Obtener la altura de un nodo
+int altura(Nodo *nodo) {
+    if (nodo == NULL)
+        return 0;
+
+    return nodo->altura;
+}
+
+// Crear un nuevo nodo
+Nodo *crearNodo(int codigo) {
+    Nodo *nuevo = malloc(sizeof(Nodo));
+
+    if (nuevo == NULL) {
+        printf("Error al reservar memoria.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    nuevo->codigo = codigo;
+    nuevo->altura = 1;
+    nuevo->izquierda = NULL;
+    nuevo->derecha = NULL;
+
+    return nuevo;
+}
+
+// Calcular el factor de equilibrio
+int equilibrio(Nodo *nodo) {
+    if (nodo == NULL)
+        return 0;
+
+    return altura(nodo->izquierda)
+         - altura(nodo->derecha);
+}
+
+// Rotacion simple a la derecha (LL)
+Nodo *rotacionDerecha(Nodo *y) {
+    Nodo *x = y->izquierda;
+    Nodo *T2 = x->derecha;
+
+    x->derecha = y;
+    y->izquierda = T2;
+
+    y->altura = 1 + maximo(
+        altura(y->izquierda),
+        altura(y->derecha)
+    );
+
+    x->altura = 1 + maximo(
+        altura(x->izquierda),
+        altura(x->derecha)
+    );
+
+    return x;
+}
+
+// Rotacion simple a la izquierda (RR)
+Nodo *rotacionIzquierda(Nodo *x) {
+    Nodo *y = x->derecha;
+    Nodo *T2 = y->izquierda;
+
+    y->izquierda = x;
+    x->derecha = T2;
+
+    x->altura = 1 + maximo(
+        altura(x->izquierda),
+        altura(x->derecha)
+    );
+
+    y->altura = 1 + maximo(
+        altura(y->izquierda),
+        altura(y->derecha)
+    );
+
+    return y;
+}
+
+// Insertar un codigo en el arbol AVL
+Nodo *insertar(Nodo *raiz, int codigo) {
+
+    if (raiz == NULL)
+        return crearNodo(codigo);
+
+    if (codigo < raiz->codigo) {
+        raiz->izquierda =
+            insertar(raiz->izquierda, codigo);
+    }
+    else if (codigo > raiz->codigo) {
+        raiz->derecha =
+            insertar(raiz->derecha, codigo);
+    }
+    else {
+        printf("El codigo ya existe.\n");
+        return raiz;
+    }
+
+    // Actualizar altura
+    raiz->altura = 1 + maximo(
+        altura(raiz->izquierda),
+        altura(raiz->derecha)
+    );
+
+    int balance = equilibrio(raiz);
+
+    // Caso LL
+    if (balance > 1 &&
+        codigo < raiz->izquierda->codigo)
+        return rotacionDerecha(raiz);
+
+    // Caso RR
+    if (balance < -1 &&
+        codigo > raiz->derecha->codigo)
+        return rotacionIzquierda(raiz);
+
+    // Caso LR
+    if (balance > 1 &&
+        codigo > raiz->izquierda->codigo) {
+
+        raiz->izquierda =
+            rotacionIzquierda(raiz->izquierda);
+
+        return rotacionDerecha(raiz);
+    }
+
+    // Caso RL
+    if (balance < -1 &&
+        codigo < raiz->derecha->codigo) {
+
+        raiz->derecha =
+            rotacionDerecha(raiz->derecha);
+
+        return rotacionIzquierda(raiz);
+    }
+
+    return raiz;
+}
+
+// Encontrar el nodo con el menor codigo
+Nodo *nodoMinimo(Nodo *raiz) {
+
+    Nodo *actual = raiz;
+
+    while (actual != NULL &&
+           actual->izquierda != NULL) {
+        actual = actual->izquierda;
+    }
+
+    return actual;
+}
+
+// Eliminar un codigo del arbol AVL
+Nodo *eliminar(Nodo *raiz, int codigo) {
+
+    if (raiz == NULL)
+        return NULL;
+
+    if (codigo < raiz->codigo) {
+        raiz->izquierda =
+            eliminar(raiz->izquierda, codigo);
+    }
+    else if (codigo > raiz->codigo) {
+        raiz->derecha =
+            eliminar(raiz->derecha, codigo);
+    }
+    else {
+
+        // Nodo con cero o un hijo
+        if (raiz->izquierda == NULL ||
+            raiz->derecha == NULL) {
+
+            Nodo *temp = (raiz->izquierda != NULL)
+                       ? raiz->izquierda
+                       : raiz->derecha;
+
+            free(raiz);
+            return temp;
+        }
+
+        // Nodo con dos hijos
+        Nodo *temp = nodoMinimo(raiz->derecha);
+
+        raiz->codigo = temp->codigo;
+
+        raiz->derecha =
+            eliminar(raiz->derecha, temp->codigo);
+    }
+
+    // Actualizar altura
+    raiz->altura = 1 + maximo(
+        altura(raiz->izquierda),
+        altura(raiz->derecha)
+    );
+
+    int balance = equilibrio(raiz);
+
+    // Caso LL
+    if (balance > 1 &&
+        equilibrio(raiz->izquierda) >= 0)
+        return rotacionDerecha(raiz);
+
+    // Caso LR
+    if (balance > 1 &&
+        equilibrio(raiz->izquierda) < 0) {
+
+        raiz->izquierda =
+            rotacionIzquierda(raiz->izquierda);
+
+        return rotacionDerecha(raiz);
+    }
+
+    // Caso RR
+    if (balance < -1 &&
+        equilibrio(raiz->derecha) <= 0)
+        return rotacionIzquierda(raiz);
+
+    // Caso RL
+    if (balance < -1 &&
+        equilibrio(raiz->derecha) > 0) {
+
+        raiz->derecha =
+            rotacionDerecha(raiz->derecha);
+
+        return rotacionIzquierda(raiz);
+    }
+
+    return raiz;
+}
+
+// Buscar un estudiante
+Nodo *buscar(Nodo *raiz, int codigo) {
+
+    if (raiz == NULL ||
+        raiz->codigo == codigo)
+        return raiz;
+
+    if (codigo < raiz->codigo)
+        return buscar(raiz->izquierda, codigo);
+
+    return buscar(raiz->derecha, codigo);
+}
+
+// Mostrar los estudiantes en inorden
+void inorden(Nodo *raiz) {
+
+    if (raiz != NULL) {
+        inorden(raiz->izquierda);
+        printf("%d ", raiz->codigo);
+        inorden(raiz->derecha);
+    }
+}
+
+// Liberar toda la memoria del arbol
+void liberarArbol(Nodo *raiz) {
+
+    if (raiz != NULL) {
+        liberarArbol(raiz->izquierda);
+        liberarArbol(raiz->derecha);
+        free(raiz);
+    }
+}
+
+// Programa principal
+int main(void) {
+
+    Nodo *raiz = NULL;
+    int opcion, codigo;
+
+    do {
+        printf("\n========== SISTEMA AVL ==========\n");
+        printf("1. Insertar estudiante\n");
+        printf("2. Eliminar estudiante\n");
+        printf("3. Buscar estudiante\n");
+        printf("4. Mostrar estudiantes (En orden)\n");
+        printf("5. Mostrar altura del arbol\n");
+        printf("6. Salir\n");
+        printf("Seleccione una opcion: ");
+
+        if (scanf("%d", &opcion) != 1) {
+            printf("Entrada invalida.\n");
+            break;
+        }
+
+        switch (opcion) {
+
+            case 1:
+                printf("Ingrese el codigo: ");
+                if (scanf("%d", &codigo) != 1) {
+                    printf("Codigo invalido.\n");
+                    opcion = 6;
+                    break;
+                }
+
+                if (buscar(raiz, codigo) == NULL) {
+                    raiz = insertar(raiz, codigo);
+                    printf("Estudiante insertado.\n");
+                }
+                else {
+                    printf("El codigo ya existe.\n");
+                }
+                break;
+
+            case 2:
+                printf("Codigo a eliminar: ");
+                if (scanf("%d", &codigo) != 1) {
+                    printf("Codigo invalido.\n");
+                    opcion = 6;
+                    break;
+                }
+
+                if (buscar(raiz, codigo) != NULL) {
+                    raiz = eliminar(raiz, codigo);
+                    printf("Estudiante eliminado.\n");
+                }
+                else {
+                    printf("Estudiante no encontrado.\n");
+                }
+                break;
+
+            case 3:
+                printf("Codigo a buscar: ");
+                if (scanf("%d", &codigo) != 1) {
+                    printf("Codigo invalido.\n");
+                    opcion = 6;
+                    break;
+                }
+
+                if (buscar(raiz, codigo) != NULL)
+                    printf("Estudiante encontrado.\n");
+                else
+                    printf("Estudiante no encontrado.\n");
+
+                break;
+
+            case 4:
+                printf("Estudiantes: ");
+                inorden(raiz);
+                printf("\n");
+                break;
+
+            case 5:
+                printf("Altura del arbol: %d\n",
+                       altura(raiz));
+                break;
+
+            case 6:
+                printf("Saliendo del programa...\n");
+                break;
+
+            default:
+                printf("Opcion no valida.\n");
+        }
+
+    } while (opcion != 6);
+
+    liberarArbol(raiz);
+
+    return 0;
+}

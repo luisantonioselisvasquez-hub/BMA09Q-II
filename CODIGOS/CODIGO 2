@@ -1,0 +1,510 @@
+/* ====================================================================
+ *  PREGUNTA 2 (media): insertar 10, 20, 30, 15 y 17 mostrando cada caso
+ * ==================================================================== */
+#include <stdio.h>
+#include <stdlib.h>
+
+/* ====================================================================
+ *  PARTE 1: MUTEX y ATOMIC (portable)
+ *  En Windows (Dev-C++) se usan las funciones del sistema:
+ *      CRITICAL_SECTION  = mutex      |  Interlocked*  = operaciones atomicas
+ *  El resto del programa usa los nombres MUTEX_* y AT_* y no cambia.
+ * ==================================================================== */
+#ifdef _WIN32
+  #include <windows.h>
+  typedef CRITICAL_SECTION Mutex;
+  typedef volatile LONG    Atomico;
+  #define MUTEX_INIT(m)     InitializeCriticalSection(m)
+  #define MUTEX_LOCK(m)     EnterCriticalSection(m)
+  #define MUTEX_UNLOCK(m)   LeaveCriticalSection(m)
+  #define MUTEX_DESTROY(m)  DeleteCriticalSection(m)
+  #define AT_INIT(a, v)     (*(a) = (v))
+  #define AT_SUMAR(a, v)    InterlockedExchangeAdd((a), (v))
+  #define AT_LEER(a)        ((int)InterlockedCompareExchange((a), 0, 0))
+#else
+  #include <pthread.h>
+  #include <stdatomic.h>
+  typedef pthread_mutex_t Mutex;
+  typedef atomic_int      Atomico;
+  #define MUTEX_INIT(m)     pthread_mutex_init((m), NULL)
+  #define MUTEX_LOCK(m)     pthread_mutex_lock(m)
+  #define MUTEX_UNLOCK(m)   pthread_mutex_unlock(m)
+  #define MUTEX_DESTROY(m)  pthread_mutex_destroy(m)
+  #define AT_INIT(a, v)     atomic_init((a), (v))
+  #define AT_SUMAR(a, v)    atomic_fetch_add((a), (v))
+  #define AT_LEER(a)        atomic_load(a)
+#endif
+
+/* ====================================================================
+ *  PARTE 2: ESTRUCTURAS (struct + punteros)
+ * ==================================================================== */
+typedef enum { ROJO, NEGRO } Color;
+
+typedef struct Nodo {
+    int clave;
+    Color color;                         /* regla 1: rojo o negro            */
+    struct Nodo *izq, *der, *padre;      /* punteros a hijos y al padre      */
+} Nodo;
+
+typedef struct {
+    Nodo *raiz;
+    Nodo *nil;            /* centinela NEGRO: todas las hojas apuntan a el   */
+    Mutex mutex;          /* MUTEX: solo un hilo a la vez toca el arbol      */
+    Atomico total_nodos;  /* ATOMIC: contadores seguros entre hilos          */
+    Atomico n_rotaciones;
+    Atomico n_recoloraciones;
+    int verbose;          /* 1 = imprime el caso de balanceo que se aplica   */
+} ArbolRN;
+
+/* ====================================================================
+ *  PARTE 3: ROTACIONES Y COLORES
+ * ==================================================================== */
+static void rotar_izq(ArbolRN *t, Nodo *x)
+{
+    Nodo *y = x->der;                    /* y sube, x baja a la izquierda    */
+    x->der = y->izq;
+    if (y->izq != t->nil) y->izq->padre = x;
+    y->padre = x->padre;
+    if (x->padre == t->nil)       t->raiz = y;
+    else if (x == x->padre->izq)  x->padre->izq = y;
+    else                          x->padre->der = y;
+    y->izq = x;
+    x->padre = y;
+    AT_SUMAR(&t->n_rotaciones, 1);
+}
+
+static void rotar_der(ArbolRN *t, Nodo *y)
+{
+    Nodo *x = y->izq;                    /* x sube, y baja a la derecha      */
+    y->izq = x->der;
+    if (x->der != t->nil) x->der->padre = y;
+    x->padre = y->padre;
+    if (y->padre == t->nil)       t->raiz = x;
+    else if (y == y->padre->der)  y->padre->der = x;
+    else                          y->padre->izq = x;
+    x->der = y;
+    y->padre = x;
+    AT_SUMAR(&t->n_rotaciones, 1);
+}
+
+/* Cambia el color de un nodo y cuenta el cambio (contador atomico) */
+static void pintar(ArbolRN *t, Nodo *n, Color c)
+{
+    if (n != t->nil && n->color != c) {
+        n->color = c;
+        AT_SUMAR(&t->n_recoloraciones, 1);
+    }
+}
+
+/* ====================================================================
+ *  PARTE 4: CREAR / DESTRUIR (memoria dinamica)
+ * ==================================================================== */
+static Nodo *nuevo_nodo(ArbolRN *t, int clave)
+{
+    Nodo *n = (Nodo *)malloc(sizeof(Nodo));      /* memoria dinamica */
+    if (n == NULL) { printf("Sin memoria\n"); exit(1); }
+    n->clave = clave;
+    n->color = ROJO;                             /* todo nodo nuevo es ROJO */
+    n->izq = n->der = n->padre = t->nil;
+    return n;
+}
+
+ArbolRN *rn_crear(void)
+{
+    ArbolRN *t = (ArbolRN *)malloc(sizeof(ArbolRN));
+    if (t == NULL) { printf("Sin memoria\n"); exit(1); }
+    t->nil = (Nodo *)malloc(sizeof(Nodo));
+    if (t->nil == NULL) { printf("Sin memoria\n"); exit(1); }
+    t->nil->color = NEGRO;                       /* regla 3: NIL es negro */
+    t->nil->clave = 0;
+    t->nil->izq = t->nil->der = t->nil->padre = t->nil;
+    t->raiz = t->nil;
+    MUTEX_INIT(&t->mutex);
+    AT_INIT(&t->total_nodos, 0);
+    AT_INIT(&t->n_rotaciones, 0);
+    AT_INIT(&t->n_recoloraciones, 0);
+    t->verbose = 0;
+    return t;
+}
+
+static void liberar_rec(ArbolRN *t, Nodo *n)
+{
+    if (n == t->nil) return;
+    liberar_rec(t, n->izq);
+    liberar_rec(t, n->der);
+    free(n);
+}
+
+void rn_destruir(ArbolRN *t)
+{
+    MUTEX_LOCK(&t->mutex);
+    liberar_rec(t, t->raiz);
+    MUTEX_UNLOCK(&t->mutex);
+    MUTEX_DESTROY(&t->mutex);
+    free(t->nil);
+    free(t);
+}
+
+/* ====================================================================
+ *  PARTE 5: INSERCION (casos 1, 2 y 3)
+ *  Z = nodo nuevo (rojo), P = padre, G = abuelo, U = tio
+ * ==================================================================== */
+static void insertar_arreglo(ArbolRN *t, Nodo *z)
+{
+    Nodo *p, *g, *tio;
+    while (z->padre->color == ROJO) {            /* regla 4 rota: rojo-rojo */
+        p = z->padre;
+        g = p->padre;
+        if (p == g->izq) {
+            tio = g->der;
+            if (tio->color == ROJO) {                       /* CASO 1 */
+                if (t->verbose) printf("   [caso 1] tio %d rojo: recolorear padre %d y tio a negro, abuelo %d a rojo\n", tio->clave, p->clave, g->clave);
+                pintar(t, p, NEGRO); pintar(t, tio, NEGRO); pintar(t, g, ROJO);
+                z = g;                                      /* sigue hacia arriba */
+            } else {
+                if (z == p->der) {                          /* CASO 2 (zigzag) */
+                    if (t->verbose) printf("   [caso 2] zigzag: rotacion izquierda sobre el padre %d\n", p->clave);
+                    z = p;
+                    rotar_izq(t, z);
+                    p = z->padre;
+                    g = p->padre;
+                }
+                if (t->verbose) printf("   [caso 3] linea: rotacion derecha sobre el abuelo %d e intercambio de colores\n", g->clave);
+                pintar(t, p, NEGRO);                        /* CASO 3 (linea) */
+                pintar(t, g, ROJO);
+                rotar_der(t, g);
+            }
+        } else {                                            /* lado simetrico */
+            tio = g->izq;
+            if (tio->color == ROJO) {                       /* CASO 1 */
+                if (t->verbose) printf("   [caso 1] tio %d rojo: recolorear padre %d y tio a negro, abuelo %d a rojo\n", tio->clave, p->clave, g->clave);
+                pintar(t, p, NEGRO); pintar(t, tio, NEGRO); pintar(t, g, ROJO);
+                z = g;
+            } else {
+                if (z == p->izq) {                          /* CASO 2 (zigzag) */
+                    if (t->verbose) printf("   [caso 2] zigzag: rotacion derecha sobre el padre %d\n", p->clave);
+                    z = p;
+                    rotar_der(t, z);
+                    p = z->padre;
+                    g = p->padre;
+                }
+                if (t->verbose) printf("   [caso 3] linea: rotacion izquierda sobre el abuelo %d e intercambio de colores\n", g->clave);
+                pintar(t, p, NEGRO);                        /* CASO 3 (linea) */
+                pintar(t, g, ROJO);
+                rotar_izq(t, g);
+            }
+        }
+    }
+    pintar(t, t->raiz, NEGRO);                              /* regla 2: raiz negra */
+}
+
+/* Devuelve 1 si inserto, 0 si la clave ya existia */
+int rn_insertar(ArbolRN *t, int clave)
+{
+    Nodo *y, *x, *z;
+    MUTEX_LOCK(&t->mutex);                       /* entra a la seccion critica */
+    y = t->nil;
+    x = t->raiz;
+    while (x != t->nil) {                        /* 1) insercion normal de ABB */
+        y = x;
+        if (clave == x->clave) { MUTEX_UNLOCK(&t->mutex); return 0; }
+        x = (clave < x->clave) ? x->izq : x->der;
+    }
+    z = nuevo_nodo(t, clave);
+    z->padre = y;
+    if (y == t->nil)            t->raiz = z;
+    else if (clave < y->clave)  y->izq = z;
+    else                        y->der = z;
+    AT_SUMAR(&t->total_nodos, 1);
+    insertar_arreglo(t, z);                      /* 2) restaurar las reglas   */
+    MUTEX_UNLOCK(&t->mutex);                     /* sale de la seccion critica */
+    return 1;
+}
+
+/* ====================================================================
+ *  PARTE 6: ELIMINACION (casos 1, 2, 3 y 4)
+ *  x = nodo con "doble negro", s = su hermano
+ * ==================================================================== */
+static void trasplantar(ArbolRN *t, Nodo *u, Nodo *v)
+{
+    if (u->padre == t->nil)       t->raiz = v;
+    else if (u == u->padre->izq)  u->padre->izq = v;
+    else                          u->padre->der = v;
+    v->padre = u->padre;
+}
+
+static Nodo *minimo(ArbolRN *t, Nodo *x)
+{
+    while (x->izq != t->nil) x = x->izq;
+    return x;
+}
+
+static void eliminar_arreglo(ArbolRN *t, Nodo *x)
+{
+    Nodo *s;
+    while (x != t->raiz && x->color == NEGRO) {
+        if (x == x->padre->izq) {
+            s = x->padre->der;
+            if (s->color == ROJO) {                                  /* CASO 1 */
+                if (t->verbose) printf("   [caso 1] hermano %d rojo: recolorear y rotar izquierda sobre el padre %d\n", s->clave, x->padre->clave);
+                pintar(t, s, NEGRO); pintar(t, x->padre, ROJO);
+                rotar_izq(t, x->padre);
+                s = x->padre->der;
+            }
+            if (s->izq->color == NEGRO && s->der->color == NEGRO) {  /* CASO 2 */
+                if (t->verbose) printf("   [caso 2] hermano %d negro con hijos negros: pintarlo de rojo y subir el problema\n", s->clave);
+                pintar(t, s, ROJO);
+                x = x->padre;
+            } else {
+                if (s->der->color == NEGRO) {                        /* CASO 3 */
+                    if (t->verbose) printf("   [caso 3] hijo lejano negro: rotar derecha sobre el hermano %d\n", s->clave);
+                    pintar(t, s->izq, NEGRO); pintar(t, s, ROJO);
+                    rotar_der(t, s);
+                    s = x->padre->der;
+                }
+                if (t->verbose) printf("   [caso 4] hijo lejano %d rojo: rotar izquierda sobre el padre %d y ajustar colores\n", s->der->clave, x->padre->clave);
+                pintar(t, s, x->padre->color);                       /* CASO 4 */
+                pintar(t, x->padre, NEGRO);
+                pintar(t, s->der, NEGRO);
+                rotar_izq(t, x->padre);
+                x = t->raiz;
+            }
+        } else {                                                     /* simetrico */
+            s = x->padre->izq;
+            if (s->color == ROJO) {                                  /* CASO 1 */
+                if (t->verbose) printf("   [caso 1] hermano %d rojo: recolorear y rotar derecha sobre el padre %d\n", s->clave, x->padre->clave);
+                pintar(t, s, NEGRO); pintar(t, x->padre, ROJO);
+                rotar_der(t, x->padre);
+                s = x->padre->izq;
+            }
+            if (s->der->color == NEGRO && s->izq->color == NEGRO) {  /* CASO 2 */
+                if (t->verbose) printf("   [caso 2] hermano %d negro con hijos negros: pintarlo de rojo y subir el problema\n", s->clave);
+                pintar(t, s, ROJO);
+                x = x->padre;
+            } else {
+                if (s->izq->color == NEGRO) {                        /* CASO 3 */
+                    if (t->verbose) printf("   [caso 3] hijo lejano negro: rotar izquierda sobre el hermano %d\n", s->clave);
+                    pintar(t, s->der, NEGRO); pintar(t, s, ROJO);
+                    rotar_izq(t, s);
+                    s = x->padre->izq;
+                }
+                if (t->verbose) printf("   [caso 4] hijo lejano %d rojo: rotar derecha sobre el padre %d y ajustar colores\n", s->izq->clave, x->padre->clave);
+                pintar(t, s, x->padre->color);                       /* CASO 4 */
+                pintar(t, x->padre, NEGRO);
+                pintar(t, s->izq, NEGRO);
+                rotar_der(t, x->padre);
+                x = t->raiz;
+            }
+        }
+    }
+    pintar(t, x, NEGRO);
+}
+
+/* Devuelve 1 si elimino, 0 si la clave no existia */
+int rn_eliminar(ArbolRN *t, int clave)
+{
+    Nodo *z, *y, *x;
+    Color color_original;
+    MUTEX_LOCK(&t->mutex);
+    z = t->raiz;
+    while (z != t->nil && z->clave != clave)
+        z = (clave < z->clave) ? z->izq : z->der;
+    if (z == t->nil) { MUTEX_UNLOCK(&t->mutex); return 0; }
+
+    y = z;
+    color_original = y->color;
+    if (z->izq == t->nil) {                      /* sin hijo izquierdo */
+        x = z->der;
+        trasplantar(t, z, z->der);
+    } else if (z->der == t->nil) {               /* sin hijo derecho   */
+        x = z->izq;
+        trasplantar(t, z, z->izq);
+    } else {                                     /* dos hijos: usa el sucesor */
+        y = minimo(t, z->der);
+        color_original = y->color;
+        x = y->der;
+        if (y->padre == z) {
+            x->padre = y;
+        } else {
+            trasplantar(t, y, y->der);
+            y->der = z->der;
+            y->der->padre = y;
+        }
+        trasplantar(t, z, y);
+        y->izq = z->izq;
+        y->izq->padre = y;
+        y->color = z->color;
+    }
+    free(z);                                     /* libera la memoria del nodo */
+    AT_SUMAR(&t->total_nodos, -1);
+    if (color_original == NEGRO) {               /* se perdio un negro: corregir */
+        if (t->verbose) printf("   se elimino un nodo NEGRO: aparece un \"doble negro\", se corrige:\n");
+        eliminar_arreglo(t, x);
+    } else if (t->verbose) {
+        printf("   se elimino un nodo ROJO: no hay que corregir nada\n");
+    }
+    t->nil->padre = t->nil;
+    MUTEX_UNLOCK(&t->mutex);
+    return 1;
+}
+
+/* ====================================================================
+ *  PARTE 7: CONSULTAS Y VALIDACION
+ * ==================================================================== */
+int rn_buscar(ArbolRN *t, int clave)
+{
+    Nodo *x;
+    int hallado;
+    MUTEX_LOCK(&t->mutex);
+    x = t->raiz;
+    while (x != t->nil && x->clave != clave)
+        x = (clave < x->clave) ? x->izq : x->der;
+    hallado = (x != t->nil);
+    MUTEX_UNLOCK(&t->mutex);
+    return hallado;
+}
+
+static void inorden_rec(ArbolRN *t, Nodo *n)
+{
+    if (n == t->nil) return;
+    inorden_rec(t, n->izq);
+    printf("%d(%c) ", n->clave, n->color == ROJO ? 'R' : 'N');
+    inorden_rec(t, n->der);
+}
+
+void rn_inorden(ArbolRN *t)
+{
+    MUTEX_LOCK(&t->mutex);
+    inorden_rec(t, t->raiz);
+    printf("\n");
+    MUTEX_UNLOCK(&t->mutex);
+}
+
+/* Imprime el arbol girado 90 grados: raiz a la izquierda, hijo derecho arriba */
+static void imprimir_rec(ArbolRN *t, Nodo *n, int nivel)
+{
+    int i;
+    if (n == t->nil) return;
+    imprimir_rec(t, n->der, nivel + 1);
+    for (i = 0; i < nivel; i++) printf("      ");
+    printf("%d(%c)\n", n->clave, n->color == ROJO ? 'R' : 'N');
+    imprimir_rec(t, n->izq, nivel + 1);
+}
+
+void rn_imprimir(ArbolRN *t)
+{
+    MUTEX_LOCK(&t->mutex);
+    if (t->raiz == t->nil) printf("   (arbol vacio)\n");
+    else imprimir_rec(t, t->raiz, 1);
+    MUTEX_UNLOCK(&t->mutex);
+}
+
+static int altura_rec(ArbolRN *t, Nodo *n)
+{
+    int a, b;
+    if (n == t->nil) return 0;
+    a = altura_rec(t, n->izq);
+    b = altura_rec(t, n->der);
+    return 1 + (a > b ? a : b);
+}
+
+int rn_altura(ArbolRN *t)
+{
+    int h;
+    MUTEX_LOCK(&t->mutex);
+    h = altura_rec(t, t->raiz);
+    MUTEX_UNLOCK(&t->mutex);
+    return h;
+}
+
+/* Revisa reglas 4 y 5 y el orden del ABB. Devuelve la altura negra
+ * (cuenta el NIL final); marca *ok = 0 si algo falla. */
+static int bh_rec(ArbolRN *t, Nodo *n, int *ok, const char **motivo)
+{
+    int a, b;
+    if (n == t->nil) return 1;
+    if (n->color == ROJO && (n->izq->color == ROJO || n->der->color == ROJO)) {
+        *ok = 0; *motivo = "propiedad 4: hay dos nodos rojos consecutivos";
+    }
+    if (n->izq != t->nil && n->izq->clave >= n->clave) { *ok = 0; *motivo = "orden ABB roto"; }
+    if (n->der != t->nil && n->der->clave <= n->clave) { *ok = 0; *motivo = "orden ABB roto"; }
+    a = bh_rec(t, n->izq, ok, motivo);
+    b = bh_rec(t, n->der, ok, motivo);
+    if (a != b) { *ok = 0; *motivo = "propiedad 5: distinta altura negra"; }
+    return a + (n->color == NEGRO ? 1 : 0);
+}
+
+int rn_altura_negra(ArbolRN *t)
+{
+    int ok = 1, b;
+    const char *m = "";
+    MUTEX_LOCK(&t->mutex);
+    b = bh_rec(t, t->raiz, &ok, &m);
+    if (t->raiz != t->nil) b = b - 1;            /* no contar la raiz */
+    MUTEX_UNLOCK(&t->mutex);
+    return b;
+}
+
+/* Devuelve 1 si cumple las 5 propiedades; en *motivo deja el mensaje */
+int rn_validar(ArbolRN *t, const char **motivo)
+{
+    int ok = 1;
+    const char *m = "cumple las 5 propiedades";
+    MUTEX_LOCK(&t->mutex);
+    if (t->raiz->color != NEGRO) { ok = 0; m = "propiedad 2: la raiz no es negra"; }
+    if (t->nil->color != NEGRO)  { ok = 0; m = "propiedad 3: NIL no es negro"; }
+    bh_rec(t, t->raiz, &ok, &m);
+    MUTEX_UNLOCK(&t->mutex);
+    *motivo = m;
+    return ok;
+}
+
+/* Evita que la ventana de Dev-C++ se cierre sola al terminar */
+static void pausa(void)
+{
+#ifdef _WIN32
+    system("pause");
+#endif
+}
+
+/* ====================================================================
+ *  PROGRAMA PRINCIPAL - PREGUNTA 2
+ *  Insertar 10, 20, 30, 15 y 17 mostrando el caso de cada paso.
+ * ==================================================================== */
+int main(void)
+{
+    ArbolRN *t;
+    int claves[5];
+    int i, rot0, col0;
+    const char *motivo;
+
+    claves[0] = 10; claves[1] = 20; claves[2] = 30; claves[3] = 15; claves[4] = 17;
+
+    t = rn_crear();
+    t->verbose = 1;
+
+    printf("=== PREGUNTA 2: insertar 10, 20, 30, 15 y 17 ===\n");
+    for (i = 0; i < 5; i++) {
+        rot0 = AT_LEER(&t->n_rotaciones);        /* contadores antes del paso */
+        col0 = AT_LEER(&t->n_recoloraciones);
+        printf("\n> Insertar %d\n", claves[i]);
+        rn_insertar(t, claves[i]);
+        rn_imprimir(t);
+        printf("   -> en este paso: %d rotacion(es), %d cambio(s) de color\n",
+               AT_LEER(&t->n_rotaciones) - rot0,
+               AT_LEER(&t->n_recoloraciones) - col0);
+    }
+
+    printf("\n--- Resultado final ---\n");
+    printf("Inorden               : ");
+    rn_inorden(t);
+    printf("Altura (h) / bh       : %d / %d\n", rn_altura(t), rn_altura_negra(t));
+    printf("Rotaciones totales    : %d\n", AT_LEER(&t->n_rotaciones));
+    printf("Cambios de color      : %d\n", AT_LEER(&t->n_recoloraciones));
+    rn_validar(t, &motivo);
+    printf("Validacion            : %s\n", motivo);
+
+    rn_destruir(t);
+    pausa();
+    return 0;
+}

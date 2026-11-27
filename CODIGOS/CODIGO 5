@@ -1,0 +1,434 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <limits.h>
+
+// 1. ESTRUCTURAS: producto y sistema de inventario
+typedef struct Producto {
+    int codigo;
+    char nombre[50];
+    float precio;
+    int stock;
+    int altura;
+    struct Producto *izquierda;
+    struct Producto *derecha;
+} Producto;
+
+typedef struct {
+    Producto *raiz;
+    pthread_mutex_t mutex;
+    atomic_int total_productos;
+    atomic_int operaciones_exitosas;
+} Inventario;
+
+// 2. FUNCIONES BASICAS DEL AVL
+static int maximo(int a, int b) { return a > b ? a : b; }
+static int altura(const Producto *p) { return p ? p->altura : 0; }
+static int equilibrio(const Producto *p) {
+    return p ? altura(p->izquierda) - altura(p->derecha) : 0;
+}
+static void actualizarAltura(Producto *p) {
+    p->altura = 1 + maximo(altura(p->izquierda), altura(p->derecha));
+}
+
+static Producto *crearProducto(int codigo, const char *nombre,
+                               float precio, int stock) {
+    Producto *p = malloc(sizeof *p);
+    if (!p) return NULL;
+    p->codigo = codigo;
+    snprintf(p->nombre, sizeof p->nombre, "%s", nombre);
+    p->precio = precio;
+    p->stock = stock;
+    p->altura = 1;
+    p->izquierda = p->derecha = NULL;
+    return p;
+}
+
+// 3. ROTACIONES AVL
+static Producto *rotarDerecha(Producto *y) {     // LL
+    Producto *x = y->izquierda;
+    Producto *subarbol = x->derecha;
+    x->derecha = y;
+    y->izquierda = subarbol;
+    actualizarAltura(y);
+    actualizarAltura(x);
+    return x;
+}
+
+static Producto *rotarIzquierda(Producto *x) {   // RR
+    Producto *y = x->derecha;
+    Producto *subarbol = y->izquierda;
+    y->izquierda = x;
+    x->derecha = subarbol;
+    actualizarAltura(x);
+    actualizarAltura(y);
+    return y;
+}
+
+static Producto *rebalancear(Producto *raiz) {
+    if (!raiz) return NULL;
+    actualizarAltura(raiz);
+    int fe = equilibrio(raiz);
+
+    if (fe > 1) {
+        if (equilibrio(raiz->izquierda) < 0)  // LR
+            raiz->izquierda = rotarIzquierda(raiz->izquierda);
+        return rotarDerecha(raiz);            // LL (o fin de LR)
+    }
+    if (fe < -1) {
+        if (equilibrio(raiz->derecha) > 0)    // RL
+            raiz->derecha = rotarDerecha(raiz->derecha);
+        return rotarIzquierda(raiz);          // RR (o fin de RL)
+    }
+    return raiz;
+}
+
+// 4. INSERCION RECURSIVA
+// estado: 1=insertado, 0=duplicado, -1=sin memoria
+static Producto *insertarAVL(Producto *raiz, int codigo, const char *nombre,
+                              float precio, int stock, int *estado) {
+    if (!raiz) {
+        Producto *nuevo = crearProducto(codigo, nombre, precio, stock);
+        *estado = nuevo ? 1 : -1;
+        return nuevo;
+    }
+    if (codigo < raiz->codigo)
+        raiz->izquierda = insertarAVL(raiz->izquierda, codigo, nombre,
+                                      precio, stock, estado);
+    else if (codigo > raiz->codigo)
+        raiz->derecha = insertarAVL(raiz->derecha, codigo, nombre,
+                                    precio, stock, estado);
+    else {
+        *estado = 0;
+        return raiz;
+    }
+    return rebalancear(raiz);
+}
+
+// 5. BUSQUEDA POR CODIGO
+static Producto *buscarAVL(Producto *raiz, int codigo) {
+    while (raiz) {
+        if (codigo == raiz->codigo) return raiz;
+        raiz = (codigo < raiz->codigo) ? raiz->izquierda : raiz->derecha;
+    }
+    return NULL;
+}
+
+// 6. ELIMINACION RECURSIVA
+static Producto *minimo(Producto *raiz) {
+    while (raiz->izquierda) raiz = raiz->izquierda;
+    return raiz;
+}
+
+static Producto *eliminarAVL(Producto *raiz, int codigo, int *eliminado) {
+    if (!raiz) return NULL;
+
+    if (codigo < raiz->codigo)
+        raiz->izquierda = eliminarAVL(raiz->izquierda, codigo, eliminado);
+    else if (codigo > raiz->codigo)
+        raiz->derecha = eliminarAVL(raiz->derecha, codigo, eliminado);
+    else {
+        *eliminado = 1;
+        if (!raiz->izquierda || !raiz->derecha) {
+            Producto *hijo = raiz->izquierda ? raiz->izquierda : raiz->derecha;
+            free(raiz);
+            return hijo;
+        }
+        // Dos hijos: copiar DATOS del sucesor, no punteros ni altura.
+        Producto *sucesor = minimo(raiz->derecha);
+        raiz->codigo = sucesor->codigo;
+        strcpy(raiz->nombre, sucesor->nombre);
+        raiz->precio = sucesor->precio;
+        raiz->stock = sucesor->stock;
+        raiz->derecha = eliminarAVL(raiz->derecha, sucesor->codigo, eliminado);
+    }
+    return rebalancear(raiz);
+}
+
+// 7. RECORRIDO Y LIBERACION DE MEMORIA
+static void mostrarInorden(const Producto *raiz) {
+    if (!raiz) return;
+    mostrarInorden(raiz->izquierda);
+    printf("%-10d %-24s %10.2f %8d\n",
+           raiz->codigo, raiz->nombre, raiz->precio, raiz->stock);
+    mostrarInorden(raiz->derecha);
+}
+
+static void liberarAVL(Producto *raiz) {
+    if (!raiz) return;
+    liberarAVL(raiz->izquierda);
+    liberarAVL(raiz->derecha);
+    free(raiz);
+}
+
+// 8. INVENTARIO CON MUTEX Y CONTADORES ATOMICOS
+static int iniciarInventario(Inventario *inv) {
+    inv->raiz = NULL;
+    atomic_init(&inv->total_productos, 0);
+    atomic_init(&inv->operaciones_exitosas, 0);
+    return pthread_mutex_init(&inv->mutex, NULL) == 0;
+}
+
+static int registrar(Inventario *inv, int codigo, const char *nombre,
+                     float precio, int stock) {
+    if (codigo <= 0 || !nombre[0] || precio < 0 || stock < 0) return -2;
+    int estado = 0;
+    pthread_mutex_lock(&inv->mutex);
+    inv->raiz = insertarAVL(inv->raiz, codigo, nombre, precio, stock, &estado);
+    if (estado == 1) {
+        atomic_fetch_add(&inv->total_productos, 1);
+        atomic_fetch_add(&inv->operaciones_exitosas, 1);
+    }
+    pthread_mutex_unlock(&inv->mutex);
+    return estado;
+}
+
+static void consultar(Inventario *inv, int codigo) {
+    pthread_mutex_lock(&inv->mutex);
+    Producto *p = buscarAVL(inv->raiz, codigo);
+    if (p)
+        printf("Encontrado: %d | %s | S/ %.2f | stock: %d\n",
+               p->codigo, p->nombre, p->precio, p->stock);
+    else
+        printf("No existe un producto con ese codigo.\n");
+    pthread_mutex_unlock(&inv->mutex);
+}
+
+// cambio > 0: entrada de stock; cambio < 0: venta.
+// Retorna 1=exito, 0=no existe, -1=stock insuficiente,
+// -2=operacion fuera del rango de int.
+static int modificarStock(Inventario *inv, int codigo, int cambio) {
+    pthread_mutex_lock(&inv->mutex);
+    Producto *p = buscarAVL(inv->raiz, codigo);
+    int estado;
+    if (!p) {
+        estado = 0;
+    } else {
+        long long nuevo = (long long)p->stock + cambio;
+        if (nuevo < 0) estado = -1;
+        else if (nuevo > INT_MAX) estado = -2;
+        else {
+            p->stock = (int)nuevo;
+            atomic_fetch_add(&inv->operaciones_exitosas, 1);
+            estado = 1;
+        }
+    }
+    pthread_mutex_unlock(&inv->mutex);
+    return estado;
+}
+
+static int retirar(Inventario *inv, int codigo) {
+    int eliminado = 0;
+    pthread_mutex_lock(&inv->mutex);
+    inv->raiz = eliminarAVL(inv->raiz, codigo, &eliminado);
+    if (eliminado) {
+        atomic_fetch_sub(&inv->total_productos, 1);
+        atomic_fetch_add(&inv->operaciones_exitosas, 1);
+    }
+    pthread_mutex_unlock(&inv->mutex);
+    return eliminado;
+}
+
+static void listar(Inventario *inv) {
+    pthread_mutex_lock(&inv->mutex);
+    if (!inv->raiz) {
+        puts("Inventario vacio.");
+    } else {
+        printf("%-10s %-24s %10s %8s\n", "CODIGO", "NOMBRE", "PRECIO", "STOCK");
+        mostrarInorden(inv->raiz);
+    }
+    pthread_mutex_unlock(&inv->mutex);
+}
+
+static void estadisticas(Inventario *inv) {
+    pthread_mutex_lock(&inv->mutex);
+    int h = altura(inv->raiz);
+    int cantidad = atomic_load(&inv->total_productos);
+    int ops = atomic_load(&inv->operaciones_exitosas);
+    pthread_mutex_unlock(&inv->mutex);
+    printf("Productos: %d | Altura AVL: %d | Operaciones exitosas: %d\n",
+           cantidad, h, ops);
+}
+
+static void cerrarInventario(Inventario *inv) {
+    pthread_mutex_lock(&inv->mutex);
+    liberarAVL(inv->raiz);
+    inv->raiz = NULL;
+    pthread_mutex_unlock(&inv->mutex);
+    pthread_mutex_destroy(&inv->mutex);
+}
+
+// 9. PRUEBA REAL DE CONCURRENCIA CON PTHREAD
+// Cuatro hilos agregan una unidad de stock 100 veces cada uno.
+typedef struct {
+    Inventario *inv;
+    int codigo;
+    int repeticiones;
+} DatosHilo;
+
+static void *trabajador(void *arg) {
+    DatosHilo *datos = (DatosHilo *)arg;
+    for (int i = 0; i < datos->repeticiones; i++)
+        modificarStock(datos->inv, datos->codigo, 1);
+    return NULL;
+}
+
+static void pruebaConcurrente(Inventario *inv, int codigo) {
+    pthread_t hilos[4];
+    DatosHilo datos[4];
+    int antes;
+
+    pthread_mutex_lock(&inv->mutex);
+    Producto *p = buscarAVL(inv->raiz, codigo);
+    if (!p || p->stock > INT_MAX - 400) {
+        pthread_mutex_unlock(&inv->mutex);
+        puts("Producto inexistente o stock demasiado alto para la prueba.");
+        return;
+    }
+    antes = p->stock;
+    pthread_mutex_unlock(&inv->mutex);
+
+    int creados = 0;
+    for (int i = 0; i < 4; i++) {
+        datos[i].inv = inv;
+        datos[i].codigo = codigo;
+        datos[i].repeticiones = 100;
+        if (pthread_create(&hilos[i], NULL, trabajador, &datos[i]) != 0) {
+            puts("No se pudo crear uno de los hilos.");
+            break;
+        }
+        creados++;
+    }
+    for (int i = 0; i < creados; i++)
+        pthread_join(hilos[i], NULL);
+
+    pthread_mutex_lock(&inv->mutex);
+    p = buscarAVL(inv->raiz, codigo);
+    printf("Stock inicial: %d | Stock final: %d | Incremento: %d\n",
+           antes, p->stock, p->stock - antes);
+    printf("Hilos ejecutados: %d; incremento esperado: %d\n",
+           creados, creados * 100);
+    pthread_mutex_unlock(&inv->mutex);
+}
+
+// 10. ENTRADA DE DATOS POR TECLADO
+static int leerEntero(const char *mensaje, int *valor) {
+    char linea[128], extra;
+    printf("%s", mensaje);
+    if (!fgets(linea, sizeof linea, stdin)) return 0;
+    return sscanf(linea, "%d %c", valor, &extra) == 1;
+}
+
+static int leerPrecio(const char *mensaje, float *valor) {
+    char linea[128], extra;
+    printf("%s", mensaje);
+    if (!fgets(linea, sizeof linea, stdin)) return 0;
+    return sscanf(linea, "%f %c", valor, &extra) == 1;
+}
+
+static int leerNombre(char nombre[50]) {
+    printf("Nombre: ");
+    if (!fgets(nombre, 50, stdin)) return 0;
+    size_t fin = strcspn(nombre, "\n");
+    if (nombre[fin] == '\n') nombre[fin] = '\0';
+    else {
+        int c;
+        while ((c = getchar()) != '\n' && c != EOF) {}
+    }
+    return nombre[0] != '\0';
+}
+
+// 11. MENU PRINCIPAL
+int main(void) {
+    Inventario inv;
+    if (!iniciarInventario(&inv)) {
+        puts("Error al crear mutex.");
+        return EXIT_FAILURE;
+    }
+
+    int opcion, codigo, cantidad;
+    float precio;
+    char nombre[50];
+
+    do {
+        puts("\n======= INVENTARIO CON AVL =======");
+        puts("1. Registrar producto");
+        puts("2. Buscar producto");
+        puts("3. Agregar stock");
+        puts("4. Vender producto");
+        puts("5. Eliminar producto");
+        puts("6. Mostrar inventario ordenado");
+        puts("7. Ver estadisticas y altura");
+        puts("8. Probar 4 hilos simultaneos");
+        puts("0. Salir");
+        if (!leerEntero("Opcion: ", &opcion)) {
+            puts("Opcion invalida o fin de entrada.");
+            break;
+        }
+
+        int estado;
+        switch (opcion) {
+            case 1:
+                if (!leerEntero("Codigo: ", &codigo) ||
+                    !leerNombre(nombre) ||
+                    !leerPrecio("Precio (S/): ", &precio) ||
+                    !leerEntero("Stock inicial: ", &cantidad)) {
+                    puts("Datos invalidos.");
+                    break;
+                }
+                estado = registrar(&inv, codigo, nombre, precio, cantidad);
+                if (estado == 1) puts("Producto registrado.");
+                else if (estado == 0) puts("El codigo ya existe.");
+                else if (estado == -1) puts("No hay memoria disponible.");
+                else puts("Codigo, nombre, precio o stock invalido.");
+                break;
+            case 2:
+                if (leerEntero("Codigo a buscar: ", &codigo)) consultar(&inv, codigo);
+                else puts("Codigo invalido.");
+                break;
+            case 3:
+            case 4:
+                if (!leerEntero("Codigo: ", &codigo) ||
+                    !leerEntero("Cantidad (positiva): ", &cantidad) ||
+                    cantidad <= 0) {
+                    puts("Datos invalidos.");
+                    break;
+                }
+                estado = modificarStock(&inv, codigo,
+                                        opcion == 3 ? cantidad : -cantidad);
+                if (estado == 1) puts("Stock actualizado correctamente.");
+                else if (estado == 0) puts("Producto no encontrado.");
+                else if (estado == -1) puts("Stock insuficiente.");
+                else puts("Se excede el valor maximo de stock.");
+                break;
+            case 5:
+                if (!leerEntero("Codigo a eliminar: ", &codigo)) {
+                    puts("Codigo invalido.");
+                    break;
+                }
+                puts(retirar(&inv, codigo) ? "Producto eliminado." : "Producto no encontrado.");
+                break;
+            case 6:
+                listar(&inv);
+                break;
+            case 7:
+                estadisticas(&inv);
+                break;
+            case 8:
+                if (leerEntero("Codigo para la prueba concurrente: ", &codigo))
+                    pruebaConcurrente(&inv, codigo);
+                else puts("Codigo invalido.");
+                break;
+            case 0:
+                puts("Cerrando inventario y liberando memoria...");
+                break;
+            default:
+                puts("Opcion no valida.");
+        }
+    } while (opcion != 0);
+
+    cerrarInventario(&inv);
+    return 0;
+}
