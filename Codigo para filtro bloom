@@ -1,0 +1,58 @@
+#include <stdio.h>
+#include <stdlib.h> 
+int main() {
+    char matriz[8][8] = {
+        {'A', 'B', 'E', 'F', 'G', 'A', 'B', 'E'},
+        {'F', 'G', 'A', 'B', 'E', 'F', 'G', 'A'},
+        {'B', 'E', 'F', 'G', 'A', 'B', 'E', 'F'},
+        {'G', 'A', 'B', 'E', 'F', 'G', 'A', 'B'},
+        {'E', 'F', 'G', 'A', 'B', 'E', 'F', 'G'},
+        {'A', 'B', 'E', 'F', 'G', 'A', 'B', 'E'},
+        {'F', 'G', 'A', 'B', 'E', 'F', 'G', 'A'},
+        {'B', 'E', 'F', 'G', 'A', 'B', 'E', 'F'}
+    };
+    // Vector de bits del Filtro de Bloom (16 casillas iniciadas en 0)
+    int bloom[16] = {0};
+    // 1. INSERCION: recorremos la matriz 8x8 y encendemos (1) dos posiciones por letra
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 8; j++) {
+            char letra = matriz[i][j];
+            // Funcion hash 1: posicion basada en el codigo ASCII de la letra
+            int pos1 = (letra * 3) % 16;
+            // Funcion hash 2: segunda posicion distinta para reforzar el filtro
+            int pos2 = (letra * 7 + 5) % 16;
+
+            bloom[pos1] = 1; // Marca el primer bit en 1
+            bloom[pos2] = 1; // Marca el segundo bit en 1
+        }
+    }
+    // Se imprime la matriz
+    printf("Metodo de filtro bloom\n=== MATRIZ 8x8 (Letras A-G) ===\n");
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 8; j++) {
+            printf(" %c, ", matriz[i][j]);
+        }
+        printf("\n");
+    }
+    // Mostramos como quedo el arreglo de bits del Filtro de Bloom
+    printf("\nVector de bits del Filtro de Bloom:\n");
+    for (int i = 0; i < 16; i++) {
+        printf("[%d] ", bloom[i]);
+    }
+    printf("\n");
+    // 2. CONSULTA: pedimos una letra mayuscula al usuario con scanf
+    char consulta;
+    printf("\nIngresa una letra mayuscula (ejm. A, B, C, D, E, F, G): ");
+    scanf(" %c", &consulta); // El espacio antes de %c evita leer el Enter anterior
+    // Calculamos los mismos hashes para la letra consultada
+    int h1 = (consulta * 3) % 16;
+    int h2 = (consulta * 7 + 5) % 16;
+    // Si alguno de los bits es 0, DEFINITIVAMENTE NO esta (0 falsos negativos)
+    if (bloom[h1] == 0 || bloom[h2] == 0) {
+        printf("Resultado: La letra '%c' DEFINITIVAMENTE NO ESTA en el conjunto.\n", consulta);
+    } else {
+        // Si ambos bits son 1, PROBABLEMENTE esta (puede haber falsos positivos)
+        printf("Resultado: La letra '%c' PROBABLEMENTE ESTA en el conjunto.\n", consulta);
+    }
+    return 0;
+}
