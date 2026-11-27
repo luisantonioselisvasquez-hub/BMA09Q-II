@@ -1,0 +1,108 @@
+#include <stdio.h>
+#include <stdlib.h>
+#define N 5      /* ordenes B0..B4 para el heap binomial */
+#define MAX 20   /* capacidad para el heap binario */
+
+/* --- FUNCIONES DEL MIN-HEAP BINARIO --- */
+void intercambiar(int *a, int *b) {
+    int tmp = *a;
+    *a = *b;
+    *b = tmp;
+}
+
+/* Reconstruye un heap binario desde cero (O(M)) y cuenta comparaciones */
+int construir_binario(int arr[], int tam) {
+    int i, actual, padre, comp = 0;
+    for (i = (tam / 2) - 1; i >= 0; i--) {
+        actual = i;
+        while (1) {
+            int menor = actual;
+            int izq = 2 * actual + 1;
+            int der = 2 * actual + 2;
+
+            if (izq < tam) {
+                comp++;
+                if (arr[izq] < arr[menor]) menor = izq;
+            }
+            if (der < tam) {
+                comp++;
+                if (arr[der] < arr[menor]) menor = der;
+            }
+            if (menor != actual) {
+                intercambiar(&arr[actual], &arr[menor]);
+                actual = menor;
+            } else {
+                break;
+            }
+        }
+    }
+    return comp;
+}
+
+/* --- UNION EN HEAP BINARIO (concatena y reconstruye el arreglo) --- */
+int union_binario(int b1[], int tam1, int b2[], int tam2, int res[]) {
+    int i, total = tam1 + tam2;
+    for (i = 0; i < tam1; i++) res[i] = b1[i];
+    for (i = 0; i < tam2; i++) res[tam1 + i] = b2[i];
+    return construir_binario(res, total);
+}
+
+/* --- UNION EN HEAP BINOMIAL (suma binaria con acarreo por orden k) --- */
+int union_binomial(int h1[], int h2[], int r[]) {
+    int t[3], n, k, acarreo = 0, enlaces = 0;
+
+    for (k = 0; k < N; k++) {
+        n = 0;
+        if (h1[k] > 0) { t[n] = h1[k]; n++; }
+        if (h2[k] > 0) { t[n] = h2[k]; n++; }
+        if (acarreo > 0) { t[n] = acarreo; n++; }
+
+        r[k] = 0;
+        acarreo = 0;
+
+        if (n == 1 || n == 3) r[k] = t[n - 1];
+        if (n >= 2) {
+            enlaces++;
+            if (t[0] < t[1]) acarreo = t[0];
+            else acarreo = t[1];
+        }
+    }
+    return enlaces;
+}
+
+int main() {
+    /* Mismos 8 elementos repartidos en dos grupos (5 y 3 elementos) */
+    int bin1[5] = {1, 9, 4, 8, 7}; /* min-heap binario de 5 elementos */
+    int bin2[3] = {2, 3, 6};       /* min-heap binario de 3 elementos */
+    int bin_union[MAX];
+    int comp_bin;
+
+    /* Equivalente en heap binomial (5 elementos: B0 y B2; 3 elementos: B0 y B1) */
+    int h1[N] = {9, 0, 1, 0, 0};
+    int h2[N] = {2, 3, 0, 0, 0};
+    int r[N];
+    int enlaces_binom, k;
+
+    /* 1. Union en heap binario */
+    comp_bin = union_binario(bin1, 5, bin2, 3, bin_union);
+
+    /* 2. Union en heap binomial */
+    enlaces_binom = union_binomial(h1, h2, r);
+
+    printf("=== COMPARACION DE UNION (5 ELEMENTOS + 3 ELEMENTOS) ===\n\n");
+
+    printf("[HEAP BINARIO]\n");
+    printf("Arreglo unido y heapificado (8 elem): ");
+    for (k = 0; k < 8; k++) printf("%d ", bin_union[k]);
+    printf("\nComparaciones al reconstruir: %d\n\n", comp_bin);
+
+    printf("[HEAP BINOMIAL]\n");
+    printf("Arboles resultantes por orden: ");
+    for (k = 0; k < N; k++) {
+        if (r[k] > 0) printf("B%d(raiz %d)  ", k, r[k]);
+    }
+    printf("\nEnlaces realizados (acarreos): %d\n", enlaces_binom);
+
+    system("pause");
+    return 0;
+}

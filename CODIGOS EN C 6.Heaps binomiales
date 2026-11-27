@@ -1,0 +1,35 @@
+#include <stdio.h>
+#include <stdlib.h>
+#define N 5   /* ordenes posibles: B0 hasta B4 */
+
+int main() {
+    /* h[k] = raiz del arbol Bk (0 significa que no hay arbol de ese orden) */
+    int h1[N] = {9, 0, 1, 0, 0};   /* B0 (raiz 9) y B2 (raiz 1): 5 elementos */
+    int h2[N] = {2, 3, 0, 0, 0};   /* B0 (raiz 2) y B1 (raiz 3): 3 elementos */
+    int r[N], t[3], n, k, acarreo = 0;
+
+    /* UNION: se recorre orden por orden, como una suma en binario */
+    for (k = 0; k < N; k++) {
+        n = 0;                                   /* cuantos arboles hay de orden k */
+        if (h1[k] > 0) { t[n] = h1[k]; n = n + 1; }
+        if (h2[k] > 0) { t[n] = h2[k]; n = n + 1; }
+        if (acarreo > 0) { t[n] = acarreo; n = n + 1; }
+        r[k] = 0;
+        acarreo = 0;
+        if (n == 1 || n == 3) r[k] = t[n - 1];   /* uno se queda en este orden */
+        if (n >= 2) {                            /* dos del mismo orden se enlazan */
+            if (t[0] < t[1]) acarreo = t[0];     /* la raiz menor queda como padre */
+            else acarreo = t[1];                 /* y sube al orden k+1 (acarreo) */
+        }
+    }
+
+    printf("Heap 1: ");
+    for (k = 0; k < N; k++) if (h1[k] > 0) printf("B%d(raiz %d)  ", k, h1[k]);
+    printf("\nHeap 2: ");
+    for (k = 0; k < N; k++) if (h2[k] > 0) printf("B%d(raiz %d)  ", k, h2[k]);
+    printf("\nUnion:  ");
+    for (k = 0; k < N; k++) if (r[k] > 0) printf("B%d(raiz %d)  ", k, r[k]);
+    printf("\n");
+    system("pause");
+    return 0;
+}
