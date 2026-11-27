@@ -1,0 +1,97 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct {
+    int  prioridad;      /* menor numero = mas urgente */
+    char nombre[32];
+} Tarea;
+
+typedef struct {
+    Tarea *datos;
+    size_t tam;
+    size_t cap;
+} ColaPrioridad;
+
+static void intercambiar(Tarea *a, Tarea *b) { Tarea t = *a; *a = *b; *b = t; }
+
+void cp_iniciar(ColaPrioridad *cp) { cp->datos = NULL; cp->tam = 0; cp->cap = 0; }
+void cp_liberar(ColaPrioridad *cp) { free(cp->datos); cp_iniciar(cp); }
+size_t cp_tamano(const ColaPrioridad *cp) { return cp->tam; }
+int cp_vacia(const ColaPrioridad *cp) { return cp->tam == 0; }
+
+static void subir(ColaPrioridad *cp, size_t i) {
+    while (i > 0 && cp->datos[i].prioridad < cp->datos[(i - 1) / 2].prioridad) {
+        intercambiar(&cp->datos[i], &cp->datos[(i - 1) / 2]);
+        i = (i - 1) / 2;
+    }
+}
+
+static void bajar(ColaPrioridad *cp, size_t i) {
+    for (;;) {
+        size_t menor = i, l = 2 * i + 1, r = 2 * i + 2;
+        if (l < cp->tam && cp->datos[l].prioridad < cp->datos[menor].prioridad) menor = l;
+        if (r < cp->tam && cp->datos[r].prioridad < cp->datos[menor].prioridad) menor = r;
+        if (menor == i) break;
+        intercambiar(&cp->datos[i], &cp->datos[menor]);
+        i = menor;
+    }
+}
+
+/* Agrega una tarea. Devuelve 1 si tuvo exito. Costo: O(log n) */
+int cp_insertar(ColaPrioridad *cp, int prioridad, const char *nombre) {
+    if (cp->tam == cp->cap) {
+        size_t ncap = cp->cap ? cp->cap * 2 : 8;
+        Tarea *tmp = (Tarea *)realloc(cp->datos, ncap * sizeof *tmp);
+        if (!tmp) return 0;
+        cp->datos = tmp;
+        cp->cap = ncap;
+    }
+    Tarea t;
+    t.prioridad = prioridad;
+    snprintf(t.nombre, sizeof t.nombre, "%s", nombre);
+    cp->datos[cp->tam] = t;
+    cp->tam++;
+    subir(cp, cp->tam - 1);
+    return 1;
+}
+
+/* Retira la tarea mas urgente. Devuelve 0 si la cola esta vacia. Costo: O(log n) */
+int cp_extraer(ColaPrioridad *cp, Tarea *salida) {
+    if (cp->tam == 0) return 0;
+    *salida = cp->datos[0];
+    cp->tam--;
+    cp->datos[0] = cp->datos[cp->tam];
+    if (cp->tam > 0) bajar(cp, 0);
+    return 1;
+}
+
+/* Consulta la tarea mas urgente sin retirarla. Costo: O(1) */
+int cp_peek(const ColaPrioridad *cp, Tarea *salida) {
+    if (cp->tam == 0) return 0;
+    *salida = cp->datos[0];
+    return 1;
+}
+
+int main(void) {
+    ColaPrioridad cp;
+    cp_iniciar(&cp);
+
+    cp_insertar(&cp, 3, "Imprimir informe");
+    cp_insertar(&cp, 1, "Corregir error critico");
+    cp_insertar(&cp, 4, "Responder correo");
+    cp_insertar(&cp, 2, "Actualizar sistema");
+    cp_insertar(&cp, 5, "Ordenar escritorio");
+
+    printf("Tareas en cola: %zu\n", cp_tamano(&cp));              /* 5 */
+
+    Tarea t;
+    cp_peek(&cp, &t);
+    printf("Proxima tarea: %s\n\n", t.nombre);                     /* Corregir error critico */
+
+    printf("Orden de atencion:\n");
+    while (cp_extraer(&cp, &t))
+        printf("  prioridad %d - %s\n", t.prioridad, t.nombre);
+
+    cp_liberar(&cp);
+    return 0;
+}
