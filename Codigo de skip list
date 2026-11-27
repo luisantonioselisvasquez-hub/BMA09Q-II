@@ -1,0 +1,68 @@
+#include <stdio.h>  
+#include <stdlib.h> 
+#include <time.h>  
+int main() {
+    int matriz[8][8]; 
+    int randi;       
+    srand(time(NULL));
+    // 1. LLENADO: matriz 8x8 con numeros random de dos cifras (10 a 99)
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 8; j++) {
+            randi = 10 + rand() % (99 - 10 + 1); 
+            matriz[i][j] = randi;                
+        }
+    }
+    // Se imprime la matriz 8x8
+    printf("=== MATRIZ 8x8 (Numeros random de dos cifras) ===\n");
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 8; j++) {
+            printf("%d\t", matriz[i][j]);
+        }
+        printf("\n");
+    }
+    // 2. BUSQUEDA: preguntamos que numero del 10 al 99 desea buscar
+    int buscado;
+    printf("\nQue numero del 10 al 99 deseas buscar?: ");
+    scanf("%d", &buscado);
+    // Validamos que el numero este en el rango pedido
+    if (buscado < 10 || buscado > 99) {
+        printf("Por favor ingresa un numero valido entre 10 y 99.\n");
+        return 0;
+    }
+    // Simulacion de "saltos" por filas (nivel superior) antes de revisar cada columna
+    int encontrado = 0; // 0 = no encontrado, 1 = encontrado
+    int filaEncontrada = -1;
+    int colEncontrada = -1;
+    for (int i = 0; i < 8; i++) {
+        // "Salto" rapido: verificamos primero el minimo y maximo de la fila i
+        int minFila = matriz[i][0];
+        int maxFila = matriz[i][0];
+        for (int j = 1; j < 8; j++) {
+            if (matriz[i][j] < minFila) minFila = matriz[i][j];
+            if (matriz[i][j] > maxFila) maxFila = matriz[i][j];
+        }
+        // Si el numero buscado esta entre el minimo y el maximo de esta fila,
+        // "bajamos" a revisar los elementos de esa fila uno por uno
+        if (buscado >= minFila && buscado <= maxFila) {
+            for (int j = 0; j < 8; j++) {
+                if (matriz[i][j] == buscado) {
+                    encontrado = 1;
+                    filaEncontrada = i;
+                    colEncontrada = j;
+                    break; // Salimos del bucle de columnas al hallarlo
+                }
+            }
+        }
+        if (encontrado == 1) {
+            break; // Salimos del bucle de filas si ya lo encontramos
+        }
+    }
+    // 3. RESULTADO EXACTO FINAL
+    if (encontrado == 1) {
+        printf("SI ESTA: El numero %d se encontro en la fila %d, columna %d.\n",
+               buscado, filaEncontrada, colEncontrada);
+    } else {
+        printf("NO ESTA: El numero %d no se encuentra en la matriz.\n", buscado);
+    }
+    return 0;
+}
