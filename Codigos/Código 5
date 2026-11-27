@@ -1,0 +1,207 @@
+#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <pthread.h>
+#include <stdatomic.h>
+
+typedef struct CacheEntry {
+    char *key;
+    char *value;
+    struct CacheEntry *h_next; /* Puntero para encadenamiento en Tabla Hash */
+    struct CacheEntry *prev;   /* Puntero anterior en Lista Doble LRU */
+    struct CacheEntry *next;   /* Puntero siguiente en Lista Doble LRU */
+} CacheEntry;
+
+typedef struct {
+    CacheEntry **buckets;
+    size_t bucket_count;
+    size_t max_entries;
+    size_t current_entries;
+    CacheEntry *head; /* Más recientemente usado (MRU) */
+    CacheEntry *tail; /* Menos recientemente usado (LRU) */
+    pthread_mutex_t cache_mutex;
+    atomic_uint_fast64_t hits;
+    atomic_uint_fast64_t misses;
+    atomic_uint_fast64_t evictions;
+} ConcurrentLRUCache;
+
+static size_t hash_key(const char *str, size_t m) {
+    uint64_t hash = 5381;
+    int c;
+    while ((c = (unsigned char)*str++)) {
+        hash = ((hash << 5) + hash) + (uint64_t)c;
+    }
+    return (size_t)(hash % m);
+}
+
+static void dll_remove(ConcurrentLRUCache *cache, CacheEntry *node) {
+    if (node->prev) node->prev->next = node->next;
+    else cache->head = node->next;
+
+    if (node->next) node->next->prev = node->prev;
+    else cache->tail = node->prev;
+
+    node->prev = node->next = NULL;
+}
+
+static void dll_push_front(ConcurrentLRUCache *cache, CacheEntry *node) {
+    node->prev = NULL;
+    node->next = cache->head;
+    if (cache->head) cache->head->prev = node;
+    cache->head = node;
+    if (!cache->tail) cache->tail = node;
+}
+
+ConcurrentLRUCache *lru_create(size_t max_entries, size_t bucket_count) {
+    ConcurrentLRUCache *cache = malloc(sizeof(ConcurrentLRUCache));
+    if (!cache) return NULL;
+    cache->buckets = calloc(bucket_count, sizeof(CacheEntry *));
+    if (!cache->buckets) {
+        free(cache);
+        return NULL;
+    }
+    cache->bucket_count = bucket_count;
+    cache->max_entries = max_entries;
+    cache->current_entries = 0;
+    cache->head = cache->tail = NULL;
+    pthread_mutex_init(&cache->cache_mutex, NULL);
+    atomic_init(&cache->hits, 0);
+    atomic_init(&cache->misses, 0);
+    atomic_init(&cache->evictions, 0);
+    return cache;
+}
+
+/* Consulta en O(1) esperado; promueve el nodo al frente (MRU) */
+bool lru_get(ConcurrentLRUCache *cache, const char *key, char *out_buf, size_t buf_len) {
+    pthread_mutex_lock(&cache->cache_mutex);
+    size_t idx = hash_key(key, cache->bucket_count);
+    CacheEntry *curr = cache->buckets[idx];
+
+    while (curr != NULL) {
+        if (strcmp(curr->key, key) == 0) {
+            dll_remove(cache, curr);
+            dll_push_front(cache, curr);
+            if (out_buf && buf_len > 0) {
+                strncpy(out_buf, curr->value, buf_len - 1);
+                out_buf[buf_len - 1] = '\0';
+            }
+            atomic_fetch_add_explicit(&cache->hits, 1, memory_order_relaxed);
+            pthread_mutex_unlock(&cache->cache_mutex);
+            return true;
+        }
+        curr = curr->h_next;
+    }
+
+    atomic_fetch_add_explicit(&cache->misses, 1, memory_order_relaxed);
+    pthread_mutex_unlock(&cache->cache_mutex);
+    return false;
+}
+
+/* Inserción / Actualización en O(1) esperado con expulsión LRU automática */
+void lru_put(ConcurrentLRUCache *cache, const char *key, const char *value) {
+    pthread_mutex_lock(&cache->cache_mutex);
+    size_t idx = hash_key(key, cache->bucket_count);
+    CacheEntry *curr = cache->buckets[idx];
+
+    while (curr != NULL) {
+        if (strcmp(curr->key, key) == 0) {
+            free(curr->value);
+            curr->value = strdup(value);
+            dll_remove(cache, curr);
+            dll_push_front(cache, curr);
+            pthread_mutex_unlock(&cache->cache_mutex);
+            return;
+        }
+        curr = curr->h_next;
+    }
+
+    /* Si la caché está llena, expulsamos el elemento menos recientemente usado (tail) */
+    if (cache->current_entries >= cache->max_entries && cache->tail != NULL) {
+        CacheEntry *victim = cache->tail;
+        dll_remove(cache, victim);
+
+        size_t v_idx = hash_key(victim->key, cache->bucket_count);
+        CacheEntry **indirect = &cache->buckets[v_idx];
+        while (*indirect && *indirect != victim) {
+            indirect = &(*indirect)->h_next;
+        }
+        if (*indirect == victim) {
+            *indirect = victim->h_next;
+        }
+
+        free(victim->key);
+        free(victim->value);
+        free(victim);
+        cache->current_entries--;
+        atomic_fetch_add_explicit(&cache->evictions, 1, memory_order_relaxed);
+    }
+
+    CacheEntry *entry = malloc(sizeof(CacheEntry));
+    entry->key = strdup(key);
+    entry->value = strdup(value);
+    entry->h_next = cache->buckets[idx];
+    cache->buckets[idx] = entry;
+    dll_push_front(cache, entry);
+    cache->current_entries++;
+
+    pthread_mutex_unlock(&cache->cache_mutex);
+}
+
+void lru_destroy(ConcurrentLRUCache *cache) {
+    if (!cache) return;
+    pthread_mutex_lock(&cache->cache_mutex);
+    CacheEntry *curr = cache->head;
+    while (curr != NULL) {
+        CacheEntry *next = curr->next;
+        free(curr->key);
+        free(curr->value);
+        free(curr);
+        curr = next;
+    }
+    pthread_mutex_unlock(&cache->cache_mutex);
+    pthread_mutex_destroy(&cache->cache_mutex);
+    free(cache->buckets);
+    free(cache);
+}
+int i;
+void *cache_client_thread(void *arg) {
+    ConcurrentLRUCache *cache = (ConcurrentLRUCache *)arg;
+    char buf[128];
+    const char *urls[] = {"/api/users", "/api/orders", "/api/products", "/api/users", "/api/auth", "/api/metrics"};
+    for (i = 0; i < 6; ++i) {
+        if (!lru_get(cache, urls[i], buf, sizeof(buf))) {
+            lru_put(cache, urls[i], "HTTP_200_PAYLOAD_CACHED");
+        }
+    }
+    return NULL;
+}
+
+int main(void) {
+    /* Caché con capacidad máxima de 4 registros y 11 cubetas hash */
+    ConcurrentLRUCache *cache = lru_create(4, 11);
+    pthread_t workers[3];
+
+    for (i = 0; i < 3; ++i) {
+        pthread_create(&workers[i], NULL, cache_client_thread, cache);
+    }
+    for (i = 0; i < 3; ++i) {
+        pthread_join(workers[i], NULL);
+    }
+
+    uint64_t h = atomic_load(&cache->hits);
+    uint64_t m = atomic_load(&cache->misses);
+    uint64_t e = atomic_load(&cache->evictions);
+
+    printf("=== APLICACION: CACHE LRU CONCURRENTE EN O(1) ===\n\n");
+    printf("Capacidad maxima: %zu | Elementos actuales: %zu\n", cache->max_entries, cache->current_entries);
+    printf("Cache Hits (atomic):      %lu\n", (unsigned long)h);
+    printf("Cache Misses (atomic):    %lu\n", (unsigned long)m);
+    printf("Evictions LRU (atomic):   %lu\n", (unsigned long)e);
+    printf("Hit Ratio:                %.2f%%\n", (h + m) > 0 ? (100.0 * h / (h + m)) : 0.0);
+
+    lru_destroy(cache);
+    return 0;
+}

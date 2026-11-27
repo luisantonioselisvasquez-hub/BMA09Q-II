@@ -1,0 +1,85 @@
+#define __USE_MINGW_ANSI_STDIO 1
+#include <stdio.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <math.h>
+
+/* Contador global de invocaciones hash */
+static uint64_t g_hash_evaluations = 0;
+
+/* 1. Método de la División: h(k) = k mod m */
+size_t hash_division(uint64_t key, size_t m) {
+    g_hash_evaluations++;
+    if (m == 0) return 0;
+    return (size_t)(key % m);
+}
+
+/* 2. Método de la Multiplicación (Constante de Knuth) con aritmética entera de 64 bits */
+size_t hash_multiplication(uint64_t key, size_t m) {
+    const uint64_t KNUTH_CONST = 11400714819323198485ULL;
+    uint64_t product;
+    double fractional;
+
+    g_hash_evaluations++;
+    if (m == 0) return 0;
+    
+    /* A = floor(2^64 * (sqrt(5) - 1) / 2) = 11400714819323198485ULL */
+    product = key * KNUTH_CONST; /* Overflow modular natural en 2^64 */
+    fractional = (double)product / 18446744073709551616.0; /* / 2^64 */
+    return (size_t)floor((double)m * fractional);
+}
+
+/* 3. Hashing Polinomial para Cadenas (Rolling Hash con regla de Horner) */
+size_t hash_polynomial(const char *str, size_t m) {
+    const uint64_t p = 31;
+    uint64_t hash_val = 0;
+    uint64_t p_pow = 1;
+    const unsigned char *c;
+
+    g_hash_evaluations++;
+    if (!str || m == 0) return 0;
+
+    for (c = (const unsigned char *)str; *c != '\0'; ++c) {
+        hash_val = (hash_val + (*c) * p_pow) % m;
+        p_pow = (p_pow * p) % m;
+    }
+    return (size_t)hash_val;
+}
+
+/* 4. DJB2 (Daniel J. Bernstein) para dispersión de alto efecto avalancha */
+size_t hash_djb2(const char *str, size_t m) {
+    uint64_t hash = 5381;
+    int c;
+
+    g_hash_evaluations++;
+    if (!str || m == 0) return 0;
+
+    while ((c = (unsigned char)*str++)) {
+        hash = ((hash << 5) + hash) + (uint64_t)c; /* hash * 33 + c */
+    }
+    return (size_t)(hash % m);
+}
+
+int main(void) {
+    const size_t M = 101; /* Número primo */
+    const char *claves[] = {"algoritmos_uni", "algoritmos_unj", "bma09q", "tabla_hash", "tabla_hasg"};
+    size_t n_claves = sizeof(claves) / sizeof(claves[0]);
+    size_t i;
+
+    printf("=== EVALUACION DE FUNCIONES HASH (m = %zu) ===\n\n", M);
+    printf("%-18s | %-12s | %-12s\n", "Clave", "Polinomial", "DJB2");
+    printf("------------------------------------------------\n");
+    for (i = 0; i < n_claves; ++i) {
+        printf("%-18s | %-12zu | %-12zu\n",
+               claves[i],
+               hash_polynomial(claves[i], M),
+               hash_djb2(claves[i], M));
+    }
+
+    printf("\nEvaluaciones de claves numericas (k = 987654321):\n");
+    printf("  - Division:       %zu\n", hash_division(987654321ULL, M));
+    printf("  - Multiplicacion: %zu\n", hash_multiplication(987654321ULL, M));
+    printf("\nTotal invocaciones hash: %llu\n",
+           (unsigned long long)g_hash_evaluations);
+    return 0;
+}

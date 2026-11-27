@@ -1,0 +1,178 @@
+#define __USE_MINGW_ANSI_STDIO 1
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <pthread.h>
+#include <stdatomic.h>
+
+typedef enum { EMPTY, OCCUPIED, DELETED } EntryState;
+
+typedef struct {
+    uint64_t key;
+    int value;
+    EntryState state;
+} RehashEntry;
+
+typedef struct {
+    RehashEntry *entries;
+    size_t capacity;
+    size_t active_count;
+    size_t tombstone_count;
+    double max_load_factor;
+    pthread_mutex_t rw_mutex;
+    atomic_bool is_rehashing;       /* Bandera atómica de estado */
+    atomic_uint rehash_operations;  /* Contador atómico de expansiones */
+} DynamicHashTable;
+
+static bool is_prime(size_t n) {
+    size_t i;
+
+    if (n <= 1) return false;
+    if (n <= 3) return true;
+    if (n % 2 == 0 || n % 3 == 0) return false;
+
+    for (i = 5; i * i <= n; i += 6) {
+        if (n % i == 0 || n % (i + 2) == 0) return false;
+    }
+    return true;
+}
+
+static size_t next_prime(size_t n) {
+    size_t candidate;
+
+    if (n <= 2) return 2;
+    candidate = (n % 2 == 0) ? n + 1 : n;
+    while (!is_prime(candidate)) {
+        candidate += 2;
+    }
+    return candidate;
+}
+
+static void insert_raw(RehashEntry *arr, size_t cap, uint64_t key, int val, size_t *active) {
+    size_t h1 = (size_t)(key % cap);
+    size_t h2 = 1 + (size_t)(key % (cap - 1));
+    size_t i;
+    size_t idx;
+
+    for (i = 0; i < cap; ++i) {
+        idx = (h1 + i * h2) % cap;
+        if (arr[idx].state == OCCUPIED && arr[idx].key == key) {
+            arr[idx].value = val;
+            return;
+        }
+        if (arr[idx].state != OCCUPIED) {
+            arr[idx].key = key;
+            arr[idx].value = val;
+            arr[idx].state = OCCUPIED;
+            (*active)++;
+            return;
+        }
+    }
+}
+
+/* Ejecuta el rehashing asumiendo que rw_mutex ya está adquirido */
+static bool perform_rehash_locked(DynamicHashTable *ht) {
+    size_t new_cap;
+    RehashEntry *new_entries;
+    size_t new_active = 0;
+    size_t i;
+
+    atomic_store_explicit(&ht->is_rehashing, true, memory_order_release);
+
+    new_cap = next_prime(ht->capacity * 2);
+    new_entries = calloc(new_cap, sizeof(RehashEntry));
+    if (!new_entries) {
+        atomic_store_explicit(&ht->is_rehashing, false, memory_order_release);
+        return false;
+    }
+
+    for (i = 0; i < ht->capacity; ++i) {
+        /* Solo migramos entradas activas; descartamos DELETED (tombstones) */
+        if (ht->entries[i].state == OCCUPIED) {
+            insert_raw(new_entries, new_cap, ht->entries[i].key, ht->entries[i].value, &new_active);
+        }
+    }
+
+    free(ht->entries);
+    ht->entries = new_entries;
+    ht->capacity = new_cap;
+    ht->active_count = new_active;
+    ht->tombstone_count = 0;
+
+    atomic_fetch_add_explicit(&ht->rehash_operations, 1, memory_order_relaxed);
+    atomic_store_explicit(&ht->is_rehashing, false, memory_order_release);
+    return true;
+}
+
+DynamicHashTable *dht_create(size_t initial_cap, double max_alpha) {
+    DynamicHashTable *ht = malloc(sizeof(DynamicHashTable));
+    if (!ht) return NULL;
+
+    ht->capacity = next_prime(initial_cap);
+    ht->entries = calloc(ht->capacity, sizeof(RehashEntry));
+    if (!ht->entries) {
+        free(ht);
+        return NULL;
+    }
+    ht->active_count = 0;
+    ht->tombstone_count = 0;
+    ht->max_load_factor = max_alpha;
+    pthread_mutex_init(&ht->rw_mutex, NULL);
+    atomic_init(&ht->is_rehashing, false);
+    atomic_init(&ht->rehash_operations, 0);
+    return ht;
+}
+
+bool dht_put(DynamicHashTable *ht, uint64_t key, int value) {
+    double current_alpha;
+
+    pthread_mutex_lock(&ht->rw_mutex);
+
+    current_alpha = (double)(ht->active_count + ht->tombstone_count + 1) / (double)ht->capacity;
+    if (current_alpha > ht->max_load_factor) {
+        if (!perform_rehash_locked(ht)) {
+            pthread_mutex_unlock(&ht->rw_mutex);
+            return false;
+        }
+    }
+
+    insert_raw(ht->entries, ht->capacity, key, value, &ht->active_count);
+    pthread_mutex_unlock(&ht->rw_mutex);
+    return true;
+}
+
+void dht_destroy(DynamicHashTable *ht) {
+    if (!ht) return;
+    pthread_mutex_destroy(&ht->rw_mutex);
+    free(ht->entries);
+    free(ht);
+}
+
+int main(void) {
+    DynamicHashTable *ht = dht_create(7, 0.70);
+    uint64_t k;
+    size_t cap_before;
+
+    printf("=== REDIMENSIONAMIENTO DINAMICO (REHASHING, alpha_max = 0.70) ===\n\n");
+    printf("Capacidad inicial (primo): m = %zu\n\n", ht->capacity);
+
+    for (k = 1; k <= 30; ++k) {
+        cap_before = ht->capacity;
+        dht_put(ht, k * 17, (int)k);
+        if (ht->capacity != cap_before) {
+            printf("[REHASH #%u] Al insertar clave %llu -> Capacidad expandida: %zu -> %zu (alpha actual = %.3f)\n",
+                   atomic_load(&ht->rehash_operations),
+                   (unsigned long long)(k * 17),
+                   cap_before,
+                   ht->capacity,
+                   (double)ht->active_count / ht->capacity);
+        }
+    }
+
+    printf("\nEstado final: n = %zu elementos, m = %zu cubetas, alpha = %.3f\n",
+           ht->active_count, ht->capacity, (double)ht->active_count / ht->capacity);
+
+    dht_destroy(ht);
+    return 0;
+}
