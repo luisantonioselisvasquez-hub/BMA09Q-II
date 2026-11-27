@@ -1,0 +1,84 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct {
+    int   *datos;   /* arreglo dinamico: la raiz esta en datos[0] */
+    size_t tam;     /* elementos actuales */
+    size_t cap;     /* capacidad reservada */
+} MinHeap;
+
+static size_t padre(size_t i) { return (i - 1) / 2; }
+static size_t izq(size_t i)   { return 2 * i + 1; }
+static size_t der(size_t i)   { return 2 * i + 2; }
+
+static void intercambiar(int *a, int *b) { int t = *a; *a = *b; *b = t; }
+
+void heap_iniciar(MinHeap *h) { h->datos = NULL; h->tam = 0; h->cap = 0; }
+void heap_liberar(MinHeap *h) { free(h->datos); heap_iniciar(h); }
+
+static void sift_up(MinHeap *h, size_t i) {
+    while (i > 0 && h->datos[i] < h->datos[padre(i)]) {
+        intercambiar(&h->datos[i], &h->datos[padre(i)]);
+        i = padre(i);
+    }
+}
+
+static void sift_down(MinHeap *h, size_t i) {
+    for (;;) {
+        size_t menor = i, l = izq(i), r = der(i);
+        if (l < h->tam && h->datos[l] < h->datos[menor]) menor = l;
+        if (r < h->tam && h->datos[r] < h->datos[menor]) menor = r;
+        if (menor == i) break;
+        intercambiar(&h->datos[i], &h->datos[menor]);
+        i = menor;
+    }
+}
+
+/* Inserta x. Devuelve 1 si tuvo exito. Costo: O(log n) */
+int heap_insertar(MinHeap *h, int x) {
+    if (h->tam == h->cap) {                 /* crecer el arreglo si esta lleno */
+        size_t ncap = h->cap ? h->cap * 2 : 8;
+        int *tmp = (int *)realloc(h->datos, ncap * sizeof *tmp);
+        if (!tmp) return 0;
+        h->datos = tmp;
+        h->cap = ncap;
+    }
+    h->datos[h->tam] = x;                   /* 1. al final del arreglo */
+    h->tam++;
+    sift_up(h, h->tam - 1);                 /* 2. restaurar la propiedad */
+    return 1;
+}
+
+/* Extrae el minimo en *salida. Devuelve 0 si esta vacio. Costo: O(log n) */
+int heap_extraer_min(MinHeap *h, int *salida) {
+    if (h->tam == 0) return 0;
+    *salida = h->datos[0];                  /* 1. guardar la raiz */
+    h->tam--;
+    h->datos[0] = h->datos[h->tam];         /* 2. el ultimo pasa a la raiz */
+    if (h->tam > 0) sift_down(h, 0);        /* 3. hundirlo */
+    return 1;
+}
+
+/* Consulta el minimo sin extraerlo. Costo: O(1) */
+int heap_peek(const MinHeap *h, int *salida) {
+    if (h->tam == 0) return 0;
+    *salida = h->datos[0];
+    return 1;
+}
+
+int main(void) {
+    MinHeap h;
+    heap_iniciar(&h);
+    int v[] = {42, 7, 19, 3, 25, 11};
+    for (size_t i = 0; i < 6; i++) heap_insertar(&h, v[i]);
+
+    int x;
+    heap_peek(&h, &x);
+    printf("Minimo actual: %d\n", x);               /* 3 */
+
+    printf("Extracciones: ");
+    while (heap_extraer_min(&h, &x)) printf("%d ", x);   /* 3 7 11 19 25 42 */
+    printf("\n");
+    heap_liberar(&h);
+    return 0;
+}
