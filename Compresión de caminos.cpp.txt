@@ -1,0 +1,118 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct {
+    int *padre;
+    int n;
+    int componentes;
+} DSU;
+
+int inicializar(DSU *d, int n) {
+    d->padre = (int*) malloc((n + 1) * sizeof(int));
+    if (d->padre == NULL) return 0;
+    d->n = n;
+    d->componentes = n;
+    for (int i = 1; i <= n; i++) d->padre[i] = i;
+    return 1;
+}
+
+int findBasico(const DSU *d, int x) {
+    while (d->padre[x] != x) x = d->padre[x];
+    return x;
+}
+
+void unirBasico(DSU *d, int x, int y) {
+    int rx = findBasico(d, x);
+    int ry = findBasico(d, y);
+    if (rx != ry) {
+        d->padre[ry] = rx;
+        d->componentes--;
+    }
+}
+
+// Busca la raiz y acorta el camino en una segunda pasada.
+int findComprimido(DSU *d, int x, int *recorridos, int *cambios) {
+    int raiz = x;
+    *recorridos = 0;
+    *cambios = 0;
+
+    while (d->padre[raiz] != raiz) {
+        raiz = d->padre[raiz];
+        (*recorridos)++;
+    }
+
+    while (d->padre[x] != x) {
+        int siguiente = d->padre[x];
+        if (d->padre[x] != raiz) {
+            d->padre[x] = raiz;
+            (*cambios)++;
+        }
+        x = siguiente;
+    }
+    return raiz;
+}
+
+void mostrarPadres(const DSU *d) {
+    printf("Elemento:");
+    for (int i = 1; i <= d->n; i++) printf(" %2d", i);
+    printf("\nPadre:   ");
+    for (int i = 1; i <= d->n; i++) printf(" %2d", d->padre[i]);
+    printf("\n");
+}
+
+int profundidadMaxima(const DSU *d) {
+    int maximo = 0;
+    for (int i = 1; i <= d->n; i++) {
+        int actual = i, pasos = 0;
+        while (d->padre[actual] != actual) {
+            actual = d->padre[actual];
+            pasos++;
+        }
+        if (pasos > maximo) maximo = pasos;
+    }
+    return maximo;
+}
+
+int main(void) {
+    DSU d;
+    int recorridos, cambios;
+
+    if (!inicializar(&d, 8)) {
+        fprintf(stderr, "No se pudo reservar memoria.\n");
+        return EXIT_FAILURE;
+    }
+
+    // Mismas operaciones que en el ejemplo de union del informe.
+    unirBasico(&d, 1, 2);
+    unirBasico(&d, 3, 4);
+    unirBasico(&d, 2, 4);
+    unirBasico(&d, 5, 6);
+    unirBasico(&d, 7, 8);
+    unirBasico(&d, 6, 8);
+    unirBasico(&d, 4, 8);
+
+    printf("=== COMPRESION DE CAMINOS ===\n");
+    printf("ANTES DE find(8) CON COMPRESION:\n");
+    mostrarPadres(&d);
+    printf("findBasico(8) = %d\n", findBasico(&d, 8));
+    printf("Profundidad maxima del arbol: %d\n", profundidadMaxima(&d));
+    printf("Componentes: %d\n\n", d.componentes);
+
+    int raiz = findComprimido(&d, 8, &recorridos, &cambios);
+    printf("PRIMER findComprimido(8): raiz = %d\n", raiz);
+    printf("Enlaces recorridos: %d\n", recorridos);
+    printf("Enlaces actualizados: %d\n\n", cambios);
+
+    printf("DESPUES DE LA COMPRESION:\n");
+    mostrarPadres(&d);
+    printf("Profundidad maxima del arbol: %d\n", profundidadMaxima(&d));
+    printf("Componentes: %d\n\n", d.componentes);
+
+    raiz = findComprimido(&d, 8, &recorridos, &cambios);
+    printf("SEGUNDO findComprimido(8): raiz = %d\n", raiz);
+    printf("Enlaces recorridos: %d\n", recorridos);
+    printf("Enlaces actualizados: %d\n", cambios);
+
+    free(d.padre);
+    return EXIT_SUCCESS;
+}

@@ -1,0 +1,123 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef enum { POR_RANGO, POR_TAMANO } Estrategia;
+
+typedef struct {
+    int n;
+    int componentes;
+    int *padre;
+    int *rango;
+    int *tamano;
+    Estrategia estrategia;
+} DSU;
+
+int crearDSU(DSU *d, int n, Estrategia estrategia) {
+    if (n <= 0) return 0;
+    d->n = n;
+    d->componentes = n;
+    d->estrategia = estrategia;
+    d->padre = (int*)malloc((n + 1) * sizeof *d->padre);
+    d->rango = (int*)calloc((size_t)n + 1, sizeof *d->rango);
+    d->tamano =(int*) malloc((n + 1) * sizeof *d->tamano);
+    if (!d->padre || !d->rango || !d->tamano) {
+        free(d->padre); free(d->rango); free(d->tamano);
+        d->padre = d->rango = d->tamano = NULL;
+        return 0;
+    }
+    for (int i = 1; i <= n; ++i) {
+        d->padre[i] = i;
+        d->tamano[i] = 1;
+    }
+    return 1;
+}
+
+void liberarDSU(DSU *d) {
+    free(d->padre); free(d->rango); free(d->tamano);
+    d->padre = d->rango = d->tamano = NULL;
+}
+
+int encontrar(DSU *d, int x) {  /* Sin compresion: aísla las estrategias de union */
+    if (x < 1 || x > d->n) return -1;
+    while (d->padre[x] != x) x = d->padre[x];
+    return x;
+}
+
+int unir(DSU *d, int x, int y) {
+    int rx = encontrar(d, x), ry = encontrar(d, y);
+    if (rx < 0 || ry < 0) return -1;
+    if (rx == ry) return 0;
+
+    if (d->estrategia == POR_RANGO) {
+        if (d->rango[rx] < d->rango[ry]) {
+            int aux = rx; rx = ry; ry = aux;
+        }
+        d->padre[ry] = rx;
+        if (d->rango[rx] == d->rango[ry]) d->rango[rx]++;
+    } else {
+        if (d->tamano[rx] < d->tamano[ry]) {
+            int aux = rx; rx = ry; ry = aux;
+        }
+        d->padre[ry] = rx;
+    }
+    d->tamano[rx] += d->tamano[ry];
+    d->componentes--;
+    return 1;
+}
+
+void mostrar(DSU *d) {
+    printf("Elemento:");
+    for (int i = 1; i <= d->n; ++i) printf(" %2d", i);
+    printf("\nPadre:   ");
+    for (int i = 1; i <= d->n; ++i) printf(" %2d", d->padre[i]);
+    printf("\nComponentes: %d\n", d->componentes);
+}
+
+void ejemploOcho(Estrategia e) {
+    DSU d = {0};
+    if (!crearDSU(&d, 8, e)) { fprintf(stderr, "No se pudo reservar memoria.\n"); exit(1); }
+    printf("\n=== 8 ELEMENTOS / UNION POR %s ===\n", e == POR_RANGO ? "RANGO" : "TAMANO");
+    unir(&d, 1, 2); unir(&d, 3, 4); unir(&d, 2, 4);
+    unir(&d, 5, 6); unir(&d, 7, 8); unir(&d, 6, 8);
+    printf("Antes de union(4,8):\n"); mostrar(&d);
+    int a = encontrar(&d, 4), b = encontrar(&d, 8);
+    printf("Raices: find(4)=%d, find(8)=%d\n", a, b);
+    if (e == POR_RANGO) printf("Rangos de las raices: %d y %d\n", d.rango[a], d.rango[b]);
+    else printf("Tamanos de los conjuntos: %d y %d\n", d.tamano[a], d.tamano[b]);
+    unir(&d, 4, 8);
+    printf("Despues de union(4,8):\n"); mostrar(&d);
+    printf("Raiz final de 8: %d | Tamano del conjunto: %d\n", encontrar(&d, 8), d.tamano[encontrar(&d, 8)]);
+    printf("union(2,8) repetida: %s\n", unir(&d,2,8) == 0 ? "sin cambios" : "error");
+    liberarDSU(&d);
+}
+
+void ejemploNueve(Estrategia e) {
+    DSU d = {0};
+    if (!crearDSU(&d, 9, e)) { fprintf(stderr, "No se pudo reservar memoria.\n"); exit(1); }
+    printf("\n=== COMPARACION / 9 ELEMENTOS / POR %s ===\n", e == POR_RANGO ? "RANGO" : "TAMANO");
+    unir(&d,1,2); unir(&d,1,3); unir(&d,1,4); unir(&d,1,5);
+    unir(&d,6,7); unir(&d,8,9); unir(&d,7,9);
+    int a = encontrar(&d,5), b = encontrar(&d,9);
+    if (e == POR_RANGO) {
+        printf("Antes de union(5,9): A (raiz=%d, rango=%d, tamano=%d); "
+               "B (raiz=%d, rango=%d, tamano=%d)\n",
+               a, d.rango[a], d.tamano[a], b, d.rango[b], d.tamano[b]);
+    } else {
+        printf("Antes de union(5,9): A (raiz=%d, tamano=%d); "
+               "B (raiz=%d, tamano=%d)\n",
+               a, d.tamano[a], b, d.tamano[b]);
+    }
+    unir(&d,5,9);
+    printf("Despues de union(5,9): representante=%d\n",encontrar(&d,5));
+    mostrar(&d);
+    liberarDSU(&d);
+}
+
+int main(void) {
+    ejemploOcho(POR_RANGO);
+    ejemploOcho(POR_TAMANO);
+    ejemploNueve(POR_RANGO);
+    ejemploNueve(POR_TAMANO);
+    return 0;
+}
+

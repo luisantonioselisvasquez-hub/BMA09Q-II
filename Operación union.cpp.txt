@@ -1,0 +1,133 @@
+
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct {
+    int *padre;
+    int n;
+    int componentes;
+} DSU;
+
+int iniciar(DSU *d, int n) {
+    if (n <= 0) return 0;
+
+    d->padre = (int*) malloc((n + 1) * sizeof(int));
+
+    if (d->padre == NULL) return 0;
+
+    d->n = n;
+    d->componentes = n;
+
+    for (int i = 1; i <= n; i++) {
+        d->padre[i] = i;
+    }
+
+    return 1;
+}
+
+int find(const DSU *d, int x) {
+    if (x < 1 || x > d->n) return -1;
+
+    while (d->padre[x] != x) {
+        x = d->padre[x];
+    }
+
+    return x;
+}
+
+int unir(DSU *d, int x, int y) {
+    int rx = find(d, x);
+    int ry = find(d, y);
+
+    if (rx < 0 || ry < 0) return -1;
+
+    if (rx == ry) return 0;
+
+    d->padre[ry] = rx;
+    d->componentes--;
+
+    return 1;
+}
+
+void mostrarEstado(const DSU *d) {
+    printf("Elemento:");
+
+    for (int i = 1; i <= d->n; i++) {
+        printf(" %2d", i);
+    }
+
+    printf("\nPadre:   ");
+
+    for (int i = 1; i <= d->n; i++) {
+        printf(" %2d", d->padre[i]);
+    }
+
+    printf("\nComponentes: %d\n", d->componentes);
+}
+
+int main(void) {
+    DSU d = {0};
+
+    if (!iniciar(&d, 8)) {
+        printf("Error al reservar memoria.\n");
+        return 1;
+    }
+
+    printf("=== UNION BASICA: 8 ELEMENTOS ===\n");
+
+    printf("\nConstruccion de dos conjuntos:\n");
+
+    unir(&d, 1, 2);
+    unir(&d, 3, 4);
+    unir(&d, 2, 4);
+
+    unir(&d, 5, 6);
+    unir(&d, 7, 8);
+    unir(&d, 6, 8);
+
+    printf("\nANTES DE union(4,8):\n");
+
+    mostrarEstado(&d);
+
+    printf("find(4) = %d | find(8) = %d\n",
+           find(&d, 4), find(&d, 8));
+
+    printf("padre[5] = %d\n", d.padre[5]);
+
+    printf("\nEJECUCION DE union(4,8):\n");
+
+    int resultado = unir(&d, 4, 8);
+
+    printf("Fusion realizada: %s\n",
+           resultado == 1 ? "SI" : "NO");
+
+    printf("Nuevo enlace: padre[5] = %d\n",
+           d.padre[5]);
+
+    printf("\nDESPUES DE union(4,8):\n");
+
+    mostrarEstado(&d);
+
+    printf("find(4) = %d | find(8) = %d\n",
+           find(&d, 4), find(&d, 8));
+
+    printf("padre[5] = %d\n", d.padre[5]);
+
+    printf("\nCOMPROBACION DE UNION REPETIDA:\n");
+
+    resultado = unir(&d, 2, 8);
+
+    printf("union(2,8): %s\n",
+           resultado == 0
+           ? "sin cambios"
+           : "resultado inesperado");
+
+    printf("Componentes finales: %d\n",
+           d.componentes);
+
+    free(d.padre);
+
+    return 0;
+}
+
+
